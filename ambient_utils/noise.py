@@ -1,10 +1,10 @@
-"""This module contains functions for artificially corrupting images in different ways."""
 import torch
 from ambient_utils.utils import broadcast_batch_tensor, ambient_sqrt, load_image, image_to_numpy, image_from_numpy, ensure_tensor, ensure_dimensions
+from scipy.ndimage import gaussian_filter
 import PIL
 import tempfile
 import numpy as np
-
+import imagecorruptions
 
 def add_extra_noise_from_vp_to_vp(noisy_input, current_sigma, desired_sigma):
     """
@@ -113,7 +113,6 @@ def get_box_mask_that_fits(image_shape, survival_probability, device='cuda'):
 @ensure_tensor
 @ensure_dimensions
 def apply_blur(image, sigma):
-    from scipy.ndimage import gaussian_filter
     device = image.device
     return torch.tensor(gaussian_filter(image[0].cpu(), sigma=(0, sigma, sigma))).to(device).unsqueeze(0)
 
@@ -122,6 +121,137 @@ def apply_blur(image, sigma):
 def apply_additive_noise(image, sigma):
     noise = torch.randn_like(image) * sigma
     return image + noise
+
+@ensure_tensor
+@ensure_dimensions
+def apply_poisson_noise(image, stddev):
+    # Use stddev^2 as the lambda parameter for Poisson distribution
+    lambda_param = stddev ** 2
+    
+    # Generate Poisson noise with fixed lambda
+    poisson_samples = torch.poisson(torch.full_like(image, lambda_param))
+    
+    # Keep the natural non-zero mean of the Poisson distribution
+    # Mean = lambda_param, Variance = lambda_param = stddev^2
+    noise = poisson_samples
+    
+    return image + noise
+
+@ensure_tensor
+@ensure_dimensions
+def apply_blur_then_poisson_noise(image, blur_sigma, poisson_stddev):
+    """
+    Apply blur followed by Poisson noise to an image.
+    
+    Args:
+        image: Input tensor image
+        blur_sigma: Standard deviation for Gaussian blur
+        poisson_stddev: Standard deviation parameter for Poisson noise
+        
+    Returns:
+        Tensor with blur and Poisson noise applied
+    """
+    # First apply blur
+    blurred_image = apply_blur(image, blur_sigma)
+    
+    # Then apply Poisson noise
+    final_image = apply_poisson_noise(blurred_image, poisson_stddev)
+    
+    return final_image
+
+@ensure_tensor
+@ensure_dimensions
+def apply_salt_pepper_noise(image, noise_prob=0.05, salt_prob=0.5):
+    """
+    Apply salt and pepper noise to an image, then apply median filtering.
+    
+    Args:
+        image: Input tensor image
+        noise_prob: Probability of a pixel being affected by noise (0-1)
+        salt_prob: Probability of noise being salt (white) vs pepper (black) (0-1)
+        kernel_size: Size of the median filter kernel (odd number, typically 3 or 5)
+    
+    Returns:
+        Image tensor with salt and pepper noise applied and then median filtered
+    """
+    noisy_image = image.clone()
+    
+    # Generate random mask for pixels to be affected by noise
+    noise_mask = torch.rand_like(image) < noise_prob
+    
+    # Generate random mask for salt vs pepper within noise pixels
+    salt_mask = torch.rand_like(image) < salt_prob
+    
+    # Apply salt noise (set to maximum value, typically 1.0)
+    salt_pixels = noise_mask & salt_mask
+    noisy_image[salt_pixels] = 1.0
+    
+    # Apply pepper noise (set to minimum value, typically 0.0)
+    pepper_pixels = noise_mask & (~salt_mask)
+    noisy_image[pepper_pixels] = 0.0
+    
+    return noisy_image
+
+
+
+@ensure_tensor
+@ensure_dimensions
+def apply_salt_pepper_noise_with_filtering(image, noise_prob=0.05, salt_prob=0.5, kernel_size=3):
+    """
+    Apply salt and pepper noise to an image, then apply median filtering.
+    
+    Args:
+        image: Input tensor image
+        noise_prob: Probability of a pixel being affected by noise (0-1)
+        salt_prob: Probability of noise being salt (white) vs pepper (black) (0-1)
+        kernel_size: Size of the median filter kernel (odd number, typically 3 or 5)
+    
+    Returns:
+        Image tensor with salt and pepper noise applied and then median filtered
+    """
+    noisy_image = image.clone()
+    
+    # Generate random mask for pixels to be affected by noise
+    noise_mask = torch.rand_like(image) < noise_prob
+    
+    # Generate random mask for salt vs pepper within noise pixels
+    salt_mask = torch.rand_like(image) < salt_prob
+    
+    # Apply salt noise (set to maximum value, typically 1.0)
+    salt_pixels = noise_mask & salt_mask
+    noisy_image[salt_pixels] = 1.0
+    
+    # Apply pepper noise (set to minimum value, typically 0.0)
+    pepper_pixels = noise_mask & (~salt_mask)
+    noisy_image[pepper_pixels] = 0.0
+    
+    # return noisy_image
+    
+    # Apply median filtering to reduce the noise
+    # MedianBlur requires kernel_size to be odd
+    assert kernel_size % 2 == 1, "Kernel size must be odd"
+    
+    # Using torchvision's transforms or implementing median filter
+    # For PyTorch tensors, we can use scipy or implement manually
+    from scipy.ndimage import median_filter
+    import numpy as np
+    
+    # Convert to numpy for median filtering
+    if noisy_image.dim() == 3:  # Single image [C, H, W]
+        filtered_np = np.zeros_like(noisy_image.numpy())
+        for c in range(noisy_image.shape[0]):
+            filtered_np[c] = median_filter(noisy_image[c].numpy(), size=kernel_size)
+        filtered_image = torch.from_numpy(filtered_np).to(noisy_image.device)
+    elif noisy_image.dim() == 4:  # Batch of images [B, C, H, W]
+        filtered_np = np.zeros_like(noisy_image.numpy())
+        for b in range(noisy_image.shape[0]):
+            for c in range(noisy_image.shape[1]):
+                filtered_np[b, c] = median_filter(noisy_image[b, c].numpy(), size=kernel_size)
+        filtered_image = torch.from_numpy(filtered_np).to(noisy_image.device)
+    else:
+        raise ValueError("Image must be 3D [C, H, W] or 4D [B, C, H, W]")
+    
+    return filtered_image
 
 @ensure_tensor
 @ensure_dimensions
@@ -186,11 +316,33 @@ def apply_color_shift(image, shift):
 @ensure_dimensions
 def apply_imagecorruptions(image, corruption_name, severity):
     # names: ['gaussian_noise', 'shot_noise', 'impulse_noise', 'defocus_blur', 'glass_blur', 'motion_blur', 'zoom_blur', 'snow', 'frost', 'fog', 'brightness', 'contrast', 'elastic_transform', 'pixelate', 'jpeg_compression']
-    import imagecorruptions
     device = image.device
     image = image.cpu()
     image = image_to_numpy(image[0])
     image = np.clip(imagecorruptions.corrupt(image, corruption_name=corruption_name, severity=severity), 0, 255)
     return image_from_numpy(image).to(device)
 
+from io import BytesIO
+from PIL import Image
+@ensure_tensor
+@ensure_dimensions
+def apply_custom_jpeg_compression(image, quality):
+    device = image.device
+    image = image.cpu()
+    image = image_to_numpy(image[0])
+    image = Image.fromarray(image)
+    image = np.clip(_apply_custom_jpeg_compression(image, quality), 0, 255)
+    return image_from_numpy(image).to(device)
 
+def _apply_custom_jpeg_compression(x, quality):
+    output = BytesIO()
+    gray_scale = False
+    if x.mode != 'RGB':
+        gray_scale = True
+        x = x.convert('RGB')
+    x.save(output, 'JPEG', quality=quality)
+    x = Image.open(output)
+    if gray_scale:
+        x = x.convert('L')
+
+    return x
