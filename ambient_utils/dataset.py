@@ -648,44 +648,10 @@ def log_and_continue(exn):
     return True
 
 
-def tarfile_to_samples_nothrow(src, handler=log_and_continue):
-    # NOTE this is a re-impl of the webdataset impl with group_by_keys that doesn't throw
-    streams = url_opener(src, handler=handler)
-    files = tar_file_expander(streams, handler=handler)
-    samples = group_by_keys_nothrow(files, handler=handler)
-    return samples
-
 def filter_no_caption_or_no_image(sample):
     has_caption = ('txt' in sample)
     has_image = ('png' in sample or 'jpg' in sample or 'jpeg' in sample or 'webp' in sample)
     return has_caption and has_image
-
-def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
-    """Return function over iterator that groups key, value pairs into samples.
-
-    :param keys: function that splits the key into key and extension (base_plus_ext)
-    :param lcase: convert suffixes to lower case (Default value = True)
-    """
-    current_sample = None
-    for filesample in data:
-        assert isinstance(filesample, dict)
-        fname, value = filesample["fname"], filesample["data"]
-        prefix, suffix = keys(fname)
-        if prefix is None:
-            continue
-        if lcase:
-            suffix = suffix.lower()
-        # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
-        #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
-        #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
-        if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
-            if valid_sample(current_sample):
-                yield current_sample
-            current_sample = dict(__key__=prefix, __url__=filesample["__url__"])
-        if suffixes is None or suffix in suffixes:
-            current_sample[suffix] = value
-    if valid_sample(current_sample):
-        yield current_sample
 
 OPENAI_DATASET_MEAN = (0.48145466, 0.4578275, 0.40821073)
 OPENAI_DATASET_STD = (0.26862954, 0.26130258, 0.27577711)
