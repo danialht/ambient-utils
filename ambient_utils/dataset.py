@@ -431,12 +431,18 @@ class ImageFolderDataset(Dataset):
 
 
 class SyntheticallyCorruptedImageFolderDataset(ImageFolderDataset):
-    def __init__(self, corruption_probability: float = 0.5, 
-                 corruptions_dict: EasyDict = {},
+    def __init__(self, corruption_probability: float = 0.5,
+                 corruptions_dict: Optional[EasyDict] = None,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.corruption_probability = corruption_probability
-        self.corruptions_dict = corruptions_dict
+        self.corruptions_dict = corruptions_dict if corruptions_dict is not None else EasyDict()
+        if self.corruption_probability > 0 and len(self.corruptions_dict) == 0:
+            raise ValueError(
+                "corruption_probability > 0 requires a non-empty corruptions_dict "
+                "(mapping corruption_name -> {param_name: sampler_fn}). "
+                "Pass corruption_probability=0 if you don't want any corruptions applied."
+            )
     
     def __getitem__(self, idx):
         item = super().__getitem__(idx)
